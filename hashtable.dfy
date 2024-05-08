@@ -1,10 +1,47 @@
 // Function type for hash functions 
 type hashfunction<!T(==)> = (T) -> nat
 
+type pos = x: int | x > 0 witness 1
+
+trait hashset<T(==)> {
+  ghost const ReprDepth: pos
+
+  ghost function ReprFamily(n: nat): set<object>
+    decreases n
+    ensures n > 0 ==>
+      ReprFamily(n) >= ReprFamily(n-1)
+    reads this, if n == 0 then {} else ReprFamily(n-1)
+  ghost function Repr(): set<object>
+    reads this, ReprFamily(ReprDepth-1)
+  {
+    ReprFamily(ReprDepth)
+  }
+  ghost predicate Valid()
+    reads this, Repr()
+  ghost function Model(): set<T>
+    reads this, Repr()
+    requires Valid()
+
+  method insert(data: T)
+    returns (success: bool)
+    requires Valid()
+    ensures Valid()
+    ensures success ==> data !in old(Model()) && data in Model()
+    ensures !success ==> data in old(Model())
+    modifies Repr(), this
+
+  method find(key: T)
+    returns (np: hashtablenode?<T>)
+    requires Valid()
+    ensures key in old(Model()) ==> np != null && np.Valid() && np.data == key
+    ensures key !in old(Model()) ==> np == null
+
+}
+
 /* There is one instance of the following structure for each
 ** associative array of type "x1".
 */
-class hashtable<T(==)> {
+class hashtable<T(==)> extends hashset<T> {
   var size: nat                 /* The number of available slots. */
                                  /*   Must be a power of 2 greater than or */
                                  /*   equal to 1 */
@@ -13,8 +50,47 @@ class hashtable<T(==)> {
   //var ht: array<hashtablenode?<T>>   /* Hash table for lookups */
   var hash: hashfunction<T>
 
+  ghost var repr: set<object>
   ghost var elements: set<T>
-  ghost var Repr: set<object>
+
+  ghost function Repr0(): set<object>
+    reads this
+  {
+    {this} + repr + {ht}
+  }
+  ghost function Repr1(): set<object>
+    reads this, Repr0()
+  {
+    Repr0() + (set x | x in ht[..] && x != null)
+  }
+  ghost function Repr2(): set<object>
+    reads this, Repr0(), Repr1()
+  {
+    Repr1() + (set x,y | x in ht[..] && x != null && y in x.Repr() :: y)
+  }
+
+  ghost function ReprFamily(n: nat): set<object>
+    decreases n
+    ensures n > 0 ==> ReprFamily(n) >= ReprFamily(n-1)
+    reads this, if n == 0 then {} else ReprFamily(n-1)
+  {
+    if n == 0 then
+      Repr0()
+    else if n == 1 then
+      Repr1()
+    else if n == 2 then
+      Repr2()
+    else ReprFamily(n-1)
+  }
+
+  ghost function Model(): set<T>
+    reads this, Repr()
+    requires Valid()
+    //ensures Model() == valueSet(ht)
+  {
+    //(set x,y | x in ht[..] && x != null && y in x.Model() :: y)
+    valueSet(ht)
+  }
 
   ghost function sum_set(xs: set<int>): int
   {
@@ -34,16 +110,17 @@ class hashtable<T(==)> {
   }
 
   ghost predicate Valid()
-    reads this, ht, Repr, set x | x in ht[..],
-          set x,y | x in ht[..] && x != null && y in x.nodes :: y
+    reads this, Repr()
   {
-    && this in Repr
-    && ht in Repr
+    && ReprDepth == 2
+    && assert Repr0() <= Repr1() <= ReprFamily(2);true
+    && this !in repr
+    //&& ht in repr
     && size > 0
     && ht.Length == size
     && (forall i :: 0 <= i < size ==> listValid(ht[i]))
-    // what is Repr?
-    && (forall i, j, k :: 0 <= i < size && ht[i] != null && j == ht[i] && k in ht[i].nodes ==> k in Repr)
+    // what is repr?
+    && (forall i, j, k :: 0 <= i < size && ht[i] != null && j == ht[i] && k in ht[i].nodes ==> k in repr)
     // disjointness causes issues
     //&& (forall i, j :: (0 <= i < size) && (0 <= j < size) && (i != j) && (tbl[i] != null) && (tbl[j] != null) ==>
     //          tbl[i] != tbl[j] && tbl[i].nodes !! tbl[j].nodes && tbl[i].elements !! tbl[j].elements)
@@ -58,7 +135,7 @@ class hashtable<T(==)> {
   }
 
   ghost predicate listValid(x: hashtablenode?<T>)
-    reads {x}, if x != null then (set y | y in x.nodes) else {}
+    reads {x}, if x != null then (set y | y in x.Repr()) else {}
   {
     (x == null) || x.Valid()
   }
@@ -93,6 +170,7 @@ class hashtable<T(==)> {
     ensures fresh(ht)
     ensures Valid()
   {
+    ReprDepth := 2;
     size := 1024;
     count := 0;
     hash := h;
@@ -101,7 +179,7 @@ class hashtable<T(==)> {
 
     ht := new hashtablenode?<T>[size as int](i => null);
 
-    Repr := {this, ht};
+    repr := {};
     elements := {};
   }
 /*
@@ -257,16 +335,15 @@ class hashtable<T(==)> {
   method insert(data: T)
     returns (success: bool)
     requires Valid()
-    requires count < size
     ensures Valid()
     ensures success ==> data !in old(elements) && data in elements
     ensures !success ==> data in old(elements)
     ensures success ==> count == old(count) + 1
     ensures !success ==> count == old(count)
     ensures data in elements
-    modifies ht[..], this`count, Repr
+    modifies Repr()//, this`elements/*, this`repr*/, this`count
     ensures ht == old(ht)
-    ensures fresh(Repr - old(Repr))
+    ensures fresh(Repr() - old(Repr()))
   {
     var np := find(data);
     if (np != null) {
@@ -299,18 +376,18 @@ class hashtable<T(==)> {
 
   method insert_aux(node: hashtablenode<T>)
     requires Valid()
-    requires count < size
+    //requires count < size
     requires node.Valid()
-    requires node !in Repr
+    requires node !in Repr()
     requires node.data !in elements
     requires node.next == null
     ensures Valid()
     ensures node.data == old(node.data)
     //ensures node.data in elements
     ensures elements == old(elements) + {node.data}
-    modifies ht[..], this`count, Repr, node
+    modifies Repr(), node//, this`elements, this`elements, this`repr, this`count
     ensures ht == old(ht)
-    ensures Repr == old(Repr) + {node}
+    ensures Repr() == old(Repr()) + {node}
     ensures count == old(count) + 1
   {
     /* Insert the new data */
@@ -334,13 +411,13 @@ class hashtable<T(==)> {
     }
     assert listValid(ht[h]);
 
-    Repr := Repr + {node};
+    repr := repr + {node};
     elements := elements + {node.data};
     count := count + 1;
     //assert |elements|==count;
-    assert this in Repr;
+    //assert this in Repr;
     assert node.data in elements;
-    assert Repr == old(Repr) + {node};
+    assert repr == old(repr) + {node};
   }
 
   lemma not_found(key: T)
@@ -356,8 +433,8 @@ class hashtable<T(==)> {
   method find(key: T)
     returns (np: hashtablenode?<T>)
     requires Valid()
-    ensures key in elements ==> np != null && np.Valid() && np.data == key
-    ensures key !in elements ==> np == null
+    ensures key in old(Model()) ==> np != null && np.Valid() && np.data == key
+    ensures key !in old(Model()) ==> np == null
   {
     var h := hash(key) % size;
     np := ht[h];
