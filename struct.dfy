@@ -2,6 +2,11 @@
 ** Principal data structures for the LEMON parser generator.
 */
 
+include "footprint.dfy"
+include "hashtable.dfy"
+
+datatype option<T> = None | Some(T)
+
 /* Symbols (terminals and nonterminals) of the grammar are stored
 ** in the following: */
 datatype symbol_type =
@@ -15,32 +20,126 @@ datatype e_assoc =
 | NONE()
 | UNK()
 
+function strhash_loop(x: string, i: int, acc: nat): nat
+  requires 0 <= i <= |x|
+  decreases |x| - i
+{
+  if (i < |x|) then strhash_loop(x, i+1, acc * 13 + x[i] as int)
+  else acc
+}
+function strhash(x: string): nat
+{
+  strhash_loop(x, 0, 0)
+}
+
 class LTable {
-  method strhash(x: string)
-    returns (h: int)
+
+  var strings: HashTable.hashtable<string>
+
+  constructor(s: HashTable.hashtable<string>)
+    requires s.Valid()
+    ensures strings == s
+    ensures Valid()
+    ensures strings.Valid()
+    //ensures strings.Valid() && Valid()
   {
-    h := 0;
-    var i := 0;
-    while (i < |x|)
-      invariant 0 <= i <= |x|
-    {
-      h := h*13 + x[i] as int;
-      i := i + 1;
+    reveal Valid();
+    //var tmp := new HT.hashtable<string>(i => strhash_loop(i, 0, 0));
+    //strings := tmp as HT.hashset<string>;
+    strings := s;
+  }
+
+  opaque ghost predicate Valid()
+    reads this, Repr()
+    ensures Valid() ==> strings.Valid()
+  {
+    //&& assert ReprFamily(0) <= ReprFamily(2); true
+    //&& assert Repr0() <= Repr1() <= Repr2() <= ReprFamily(ReprDepth);true
+    //&& assert ReprFamily(0) <= ReprFamily(1);true// <= ReprFamily(2) <= ReprFamily(3);true
+    && assert strings.Repr() <= Repr();true
+    //&& assert F();true
+    && strings.Valid()
+  }
+
+  ghost function Repr(): set<object>
+    reads this, strings, strings.Repr()
+  {
+    {strings} + strings.Repr()
+  }
+
+  ghost function Model(): int
+    reads this, Repr()
+    requires Valid()
+  {
+    0
+  }
+
+  /* Routines for handling a strings */
+
+  /* Insert a new record into the array.  Return TRUE if successful.
+  ** Prior data with the same key is NOT overwritten */
+  method {:rlimit 100000000} Strsafe_insert(s: string)
+    returns (success: bool)
+    requires Valid()
+    modifies this, Repr(), strings.InsertRepr()
+    ensures Valid()
+  {
+    reveal Valid();
+    var t := strings;
+    assert strings == t;
+    success := strings.insert(s);
+    assert strings == old(strings);
+    assert strings.Valid();
+    assert old(t.Repr()) <= t.Repr();
+    assert t.Repr() <= Repr();
+    assert Valid();
+  }
+
+  /* Return a pointer to data assigned to the given key.  Return NULL
+  ** if no such key. */
+  method Strsafe_find(s: string)
+    returns (r: option<string>)
+    requires Valid()
+    ensures Valid()
+  {
+    var np := strings.find(s);
+    if (np != null) {
+      r := Some(np.data);
+    } else {
+      r := None;
     }
   }
 
-  // TODO: implement
-  /*
-/* Routines for handling a strings */
+  /* Routines for handling symbols of the grammar */
 
-const char *Strsafe(const char *);
+  /* Compare two symbols for sorting purposes.  Return negative,
+  ** zero, or positive if a is less then, equal to, or greater
+  ** than b.
+  **
+  ** Symbols that begin with upper case letters (terminals or tokens)
+  ** must sort before symbols that begin with lower case letters
+  ** (non-terminals).  And MULTITERMINAL symbols (created using the
+  ** %token_class directive) must sort at the very end. Other than
+  ** that, the order does not matter.
+  **
+  ** We find experimentally that leaving the symbols in their original
+  ** order (the order they appeared in the grammar file) gives the
+  ** smallest parser tables in SQLite.
+  */
+  static function Symbolcmpp(a: symbol, b: symbol): int
+    reads a, b
+    requires a.Valid() && b.Valid()
+  {
+    reveal a.Valid();
+    reveal b.Valid();
+    var i1 := if a.symtype.MULTITERMINAL? then 3 else if a.name[0]>'Z' then 2 else 1;
+    var i2 := if b.symtype.MULTITERMINAL? then 3 else if b.name[0]>'Z' then 2 else 1;
 
-void Strsafe_init(void);
-int Strsafe_insert(const char *);
-const char *Strsafe_find(const char *);
+    if i1==i2 then a.index - b.index else i1 - i2
+  }
 
-/* Routines for handling symbols of the grammar */
 
+/*
 struct symbol *Symbol_new(const char *);
 int Symbolcmpp(const void *, const void *);
 void Symbol_init(void);
@@ -68,12 +167,12 @@ void Configtable_clear(int(*)(struct config *));
 */
 }
 
-/*
 
 class symbol {
   var name: string        /* Name of the symbol */
   var index: int               /* Index number for this symbol */
   var symtype: symbol_type   /* Symbols are all either TERMINALS or NTs */
+/*
   var rule: rule       /* Linked list of rules of this (if an NT) */
   var fallback: symbol /* fallback token in case this token doesn't parse */
   var prec: int                /* Precedence if defined (-1 otherwise) */
@@ -95,8 +194,13 @@ class symbol {
   /* The following fields are used by MULTITERMINALs only */
   var nsubsym: int             /* Number of constituent symbols in the MULTI */
   var subsym: array<symbol>  /* Array of constituent symbols */
-}
+*/
 
+  opaque ghost predicate Valid() {
+    |name| > 0 && index >= 0
+  }
+}
+/*
 /* Each production rule in the grammar is stored in the following
 ** structure.  */
 class rule {
