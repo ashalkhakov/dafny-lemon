@@ -3,7 +3,8 @@
 */
 
 include "footprint.dfy"
-include "hashtable.dfy"
+include "hashset.dfy"
+include "hashmap.dfy"
 
 datatype option<T> = None | Some(T)
 
@@ -34,37 +35,34 @@ function strhash(x: string): nat
 
 class LTable {
 
-  var strings: HashTable.hashtable<string>
+  var strings: HashSet.hashtable<string>
+  var symbols: HashMap.hashtable<string, symbol>
 
-  constructor(s: HashTable.hashtable<string>)
-    requires s.Valid()
-    ensures strings == s
+  constructor()
     ensures Valid()
-    ensures strings.Valid()
-    //ensures strings.Valid() && Valid()
   {
     reveal Valid();
-    //var tmp := new HT.hashtable<string>(i => strhash_loop(i, 0, 0));
-    //strings := tmp as HT.hashset<string>;
-    strings := s;
+    strings := new HashSet.hashtable<string>(i => strhash(i), 1024);
+    symbols := new HashMap.hashtable<string,symbol>(i => strhash(i), 64);
   }
 
   opaque ghost predicate Valid()
     reads this, Repr()
-    ensures Valid() ==> strings.Valid()
+    ensures Valid() ==> strings.Valid() && symbols.Valid()
   {
-    //&& assert ReprFamily(0) <= ReprFamily(2); true
-    //&& assert Repr0() <= Repr1() <= Repr2() <= ReprFamily(ReprDepth);true
-    //&& assert ReprFamily(0) <= ReprFamily(1);true// <= ReprFamily(2) <= ReprFamily(3);true
     && assert strings.Repr() <= Repr();true
-    //&& assert F();true
+    && assert symbols.Repr() <= Repr();true
+    && symbols.Repr() !! strings.Repr()
     && strings.Valid()
+    && symbols.Valid()
+    // TODO: how to ensure this?
+    //&& forall s, v :: s in symbols.Model() && v == symbols.Model()[s] ==> v.Valid()
   }
 
   ghost function Repr(): set<object>
-    reads this, strings, strings.Repr()
+    reads this, strings, strings.Repr(), symbols, symbols.Repr()
   {
-    {strings} + strings.Repr()
+    {strings} + strings.Repr() + {symbols} + symbols.Repr() + symbols.elements.Values
   }
 
   ghost function Model(): int
@@ -81,17 +79,13 @@ class LTable {
   method {:rlimit 100000000} Strsafe_insert(s: string)
     returns (success: bool)
     requires Valid()
-    modifies this, Repr(), strings.InsertRepr()
+    modifies strings, Repr(), strings.InsertRepr()
     ensures Valid()
   {
     reveal Valid();
-    var t := strings;
-    assert strings == t;
     success := strings.insert(s);
-    assert strings == old(strings);
-    assert strings.Valid();
-    assert old(t.Repr()) <= t.Repr();
-    assert t.Repr() <= Repr();
+    assert fresh(strings.Repr() - old(strings.Repr()));
+    assert unchanged(symbols);
     assert Valid();
   }
 
@@ -138,13 +132,62 @@ class LTable {
     if i1==i2 then a.index - b.index else i1 - i2
   }
 
+  method {:rlimit 100000000} Symbol_insert(data: symbol, key: string)
+    returns (success: bool)
+    requires data.Valid()
+    requires Valid()
+    modifies symbols, Repr(), symbols.InsertRepr()
+    ensures Valid()
+  {
+    reveal Valid();
+    success := symbols.insert(data, key);
+    assert fresh(symbols.Repr() - old(symbols.Repr()));
+    assert unchanged(strings);
+    assert Valid();
+  }
+
+  /* Return a pointer to data assigned to the given key.  Return NULL
+  ** if no such key. */
+  method Symbol_find(key: string)
+    returns (r: symbol?)
+    requires Valid()
+    ensures Valid()
+    ensures key in symbols.Model() ==> r != null /*&& r.Valid() && r.name == key*/
+    ensures key !in symbols.Model() ==> r == null
+  {
+    reveal Valid();
+    var np := symbols.find(key);
+    if (np != null) {
+      assert np.key in symbols.Model();
+      //assert np.data != null && np.data.Valid();
+      //assert np.data.Valid();
+      r := np.data;
+    } else {
+      r := null;
+    }
+  }
+
+  /* Return the n-th data.  Return NULL if n is out of range. */
+  /*method Symbol_Nth(n: int): symbol
+  {
+    struct symbol *data;
+    if( x2a && n>0 && n<=x2a->count ){
+      data = x2a->tbl[n-1].data;
+    }else{
+      data = 0;
+    }
+    return data;
+  }*/
+
+  /* Return the size of the array */
+  /*function Symbol_count(): int
+  {
+    symbols.count
+  }*/
+
 
 /*
 struct symbol *Symbol_new(const char *);
-int Symbolcmpp(const void *, const void *);
-void Symbol_init(void);
-int Symbol_insert(struct symbol *, const char *);
-struct symbol *Symbol_find(const char *);
 struct symbol *Symbol_Nth(int);
 int Symbol_count(void);
 struct symbol **Symbol_arrayof(void);
@@ -196,7 +239,19 @@ class symbol {
   var subsym: array<symbol>  /* Array of constituent symbols */
 */
 
-  opaque ghost predicate Valid() {
+  constructor(n: string, i: int)
+    requires |n|>0 && i>=0
+    ensures Valid()
+    ensures this.name == n && this.index == i
+  {
+    reveal Valid();
+    this.name := n;
+    this.index := i;
+  }
+
+  opaque ghost predicate Valid()
+    reads this
+  {
     |name| > 0 && index >= 0
   }
 }

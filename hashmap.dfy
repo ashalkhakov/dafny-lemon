@@ -1,34 +1,35 @@
-module HashTable {
-
+module HashMap {
   /* There is one instance of this structure for every data element
   ** in an associative array of type "x1".
   */
-  class hashtablenode<T> {
+  class hashtablenode<K,T> {
+    var key: K                     /* The key */
     var data: T                    /* The data */
-    var next: hashtablenode?<T>    /* Next entry with the same hash */
+    var next: hashtablenode?<K, T>    /* Next entry with the same hash */
     //var prev: hashtablenode?<T>    /* Previous link */
 
-    constructor(data: T)
+    constructor(key: K, data: T)
       ensures Valid()
-      ensures this.data == data && elements == {data} && list == [data] && nodes == {this} && next == null
+      ensures this.data == data && elements == map[key:=data] && list == [(key,data)] && nodes == {this} && next == null
     {
+      this.key := key;
       this.data := data;
       this.next := null;
       //this.prev := null;
-      list := [data];
-      elements := {data};
+      list := [(key,data)];
+      elements := map[key:=data];
       nodes := {this};
     }
 
     // abstract variable storing (in the same order) the list of elements 
     // in the sequence headed by 'this'
-    ghost var list: seq<T>
+    ghost var list: seq<(K,T)>
 
-    ghost var elements: set<T>
+    ghost var elements: map<K,T>
 
     // Heap frame, 
     // Consists of the set of nodes in the list headed by 'this'
-    ghost var nodes: set<hashtablenode<T>>
+    ghost var nodes: set<hashtablenode<K,T>>
 
     ghost function Repr(): set<object>
       reads this
@@ -63,20 +64,20 @@ module HashTable {
       // this in nodes &&      
       //&& data != null
       && (next == null ==> nodes == {this} 
-                            && list == [data]
-                            && elements == {data}
+                            && list == [(key,data)]
+                            && elements == map[key:=data]
           )
       && (next != null ==> next in nodes 
                             && nodes == {this} + next.nodes
                             && this !in next.nodes // acyclity condition
-                            && data !in next.elements // uniqueness condition
-                            && list == [data] + next.list
-                            && elements == {data} + next.elements
+                            && key !in next.elements // uniqueness condition
+                            && list == [(key,data)] + next.list
+                            && elements == map[key:=data] + next.elements
                             && next.Valid()
           )
     }
 
-    ghost function Model(): set<T>
+    ghost function Model(): map<K,T>
       reads this, Repr()
       requires Valid()
     {
@@ -93,71 +94,76 @@ module HashTable {
     }*/
 
     // Makes 'this' the head of a sigleton list containg element 'e'
-    constructor singleton(e: T)
+    constructor singleton(k: K, e: T)
       ensures Valid()
-      ensures list == [e]
-      ensures elements == {e}
+      ensures list == [(k,e)]
+      ensures elements == map[k:=e]
       ensures nodes == {this}
     {
+      key := k;
       data := e;
       next := null;
 
-      list := [e];
+      list := [(k,e)];
       nodes := {this};
-      elements := {e};
+      elements := map[k:=e];
     }
 
     // Makes 'this' the head of a non-sigleton list containg element 'e' 
     // and continuing with the list headed by 'n'
-    method insert_before(e: T, n: hashtablenode<T>)
+    method insert_before(k: K, e: T, n: hashtablenode<K,T>)
       modifies this
       requires n.Valid()
       requires this !in n.nodes
-      requires e !in n.elements
+      requires k !in n.elements.Keys
       ensures Valid()
+      ensures this.key == k
       ensures this.data == e
-      ensures list == [e] + n.list
-      ensures elements == {e} + n.elements
+      ensures list == [(k,e)] + n.list
+      ensures elements == map[k:=e] + n.elements
       ensures nodes == {this} + n.nodes
     {
+      key := k;
       data := e;
       next := n;
 
-      list := [e] + n.list;
-      elements := {e} + n.elements;
+      list := [(k,e)] + n.list;
+      elements := map[k:=e] + n.elements;
       nodes := {this} + n.nodes;
     }
 
     // Returns the (possibly empty) tail of the list headed by 'this'
-    method tail() returns (t: hashtablenode?<T>)
+    method tail() returns (t: hashtablenode?<K,T>)
       requires Valid()
       ensures Valid()
       ensures t != null ==> t.Valid()
                             && t.nodes == nodes - {this}
                             && t.list == list[1..]
-                            && t.elements == elements - {data}
+                            && t.elements == elements - {key}
     {
       t := next;
     }
   }
 
   // Function type for hash functions 
-  type hashfunction<!T(==)> = (T) -> nat
+  type hashfunction<!K(==)> = (K) -> nat
 
   /* There is one instance of the following structure for each
   ** associative array of type "x1".
   */
-  class hashtable<T(==)> {
+  class hashtable<K(==),T(==)> {
     var size: nat                 /* The number of available slots. */
                                   /*   Must be a power of 2 greater than or */
                                   /*   equal to 1 */
     var count: int                 /* Number of currently slots filled */
-    var ht: array<hashtablenode?<T>>  /* The data stored here */
+    // TODO: keep an array of objects? the objects of type T would be stored here
+    // 0 <= i < count
+    var ht: array<hashtablenode?<K,T>>  /* The data stored here */
     //var ht: array<hashtablenode?<T>>   /* Hash table for lookups */
-    var hash: hashfunction<T>
+    var hash: hashfunction<K>
 
     ghost var repr: set<object>
-    ghost var elements: set<T>
+    ghost var elements: map<K,T>
 
     ghost function Repr0(): set<object>
       reads this
@@ -186,15 +192,14 @@ module HashTable {
         {this} + repr + {ht} + set x | x in ht[..]
     }
 
-    ghost function Model(): set<T>
+    ghost function Model(): map<K,T>
       reads this, Repr()
       requires Valid()
-      //ensures Model() == valueSet(ht)
       ensures Valid()
     {
       //(set x,y | x in ht[..] && x != null && y in x.Model() :: y)
       reveal Valid();
-      valueSet(ht)
+      elements
     }
 
     ghost function sum_set(xs: set<int>): int
@@ -205,11 +210,16 @@ module HashTable {
           x + sum_set(xs - {x})
     }
 
-    function flatten(nested: set<set<T>>) : set<T>
+    ghost function pick(s: set<map<K,T>>): map<K,T>
+    requires s != {}
+    {
+        var x :| x in s; x
+    }
+    ghost function flatten<K>(nested: set<set<K>>): set<K>
     {
       set x, y | y in nested && x in y :: x
     }
-    predicate disjoint(nested: set<set<T>>)
+    predicate disjoint(nested: set<set<K>>)
     {
       forall i, j :: i in nested && j in nested && i != j ==> i * j == {}
     }
@@ -228,66 +238,77 @@ module HashTable {
       //&& (forall i, j :: (0 <= i < size) && (0 <= j < size) && (i != j) && (tbl[i] != null) && (tbl[j] != null) ==>
       //          tbl[i] != tbl[j] && tbl[i].nodes !! tbl[j].nodes && tbl[i].elements !! tbl[j].elements)
       //&& disjoint(set i | 0 <= i < tbl.Length :: valueSetOfList(tbl[i]))
-      && elements == valueSet(ht)
+      && elements.Keys == keySet(ht)
+      //&& elements.Values == valueSet(ht)
       // FIXME: adding this makes [insert] verification to time out.. but we need this for resizing
       // perhaps keep a ghost variable at every list? we'd then just need to read them
       //&& count == |valueSet(ht)|
       //&& count == valueSetLength(tbl)
       //&& count == |elements|
-      && (forall e :: e in elements ==> ht[hash(e) % size] != null && e in ht[hash(e) % size].elements)
+      && (forall e :: e in elements.Keys ==> ht[hash(e) % size] != null && e in ht[hash(e) % size].elements.Keys)
     }
 
-    ghost predicate listValid(x: hashtablenode?<T>)
+    ghost predicate listValid(x: hashtablenode?<K,T>)
       reads {x}, if x != null then (set y | y in x.Repr()) else {}
     {
       (x == null) || x.Valid()
     }
 
-    ghost function nodesOfList(x: hashtablenode?<T>): set<hashtablenode<T>>
+    ghost function nodesOfList(x: hashtablenode?<K,T>): set<hashtablenode<K,T>>
       reads {x}, if x != null then (set y | y in x.nodes) else {}
     {
       if x == null then {} else x.nodes
     }
 
-    opaque ghost function valueSetOfList(x: hashtablenode?<T>): set<T>
+    opaque ghost function keySetOfList(x: hashtablenode?<K,T>): set<K>
       reads {x}, if x != null then x.nodes else {}
     {
       if x == null then {}
-      else x.elements
+      else x.elements.Keys
     }
-    ghost function valueSetLength(t: array<hashtablenode?<T>>): int
+    opaque ghost function keySet(t: array<hashtablenode?<K,T>>): set<K>
       reads t, set x | x in t[..], set x, y | x in t[..] && x != null && y in x.nodes :: y
     {
-      //sum_set(set i | 0 <= i < t.Length :: if t[i] == null then 0 else |t[i].list|)
-      |valueSet(t)|
+      flatten(set i | 0 <= i < t.Length :: keySetOfList(t[i]))
     }
-    ghost function valueSet(t: array<hashtablenode?<T>>): set<T>
+
+    opaque ghost function valueSetOfList(x: hashtablenode?<K,T>): set<T>
+      reads {x}, if x != null then x.nodes else {}
+    {
+      if x == null then {}
+      else x.elements.Values
+    }
+    opaque ghost function valueSet(t: array<hashtablenode?<K,T>>): set<T>
       reads t, set x | x in t[..], set x, y | x in t[..] && x != null && y in x.nodes :: y
     {
       flatten(set i | 0 <= i < t.Length :: valueSetOfList(t[i]))
     }
 
-
-    constructor(h: hashfunction<T>, s: nat)
+    constructor(h: hashfunction<K>, s: nat)
       requires s > 0
       ensures size == s && count == 0 && ht.Length == size && hash == h
       ensures fresh(ht)
       ensures Valid()
-      ensures elements == {}
+      ensures elements.Keys == {} && elements.Values == {}
       ensures repr == {}
     {
+      reveal Valid();
       size := s;
       count := 0;
       hash := h;
 
       new;
 
-      ht := new hashtablenode?<T>[size as int](i => null);
+      ht := new hashtablenode?<K,T>[size as int](i => null);
 
       repr := {};
-      elements := {};
+      elements := map[];
+      assert elements.Keys == {};
+      assert elements.Values == {};
+      reveal keySet();
+      reveal keySetOfList();
+      reveal valueSet();
       reveal valueSetOfList();
-      reveal Valid();
     }
 
   /*
@@ -440,30 +461,28 @@ module HashTable {
   */
     /* Insert a new record into the array.  Return TRUE if successful.
     ** Prior data with the same key is NOT overwritten */
-    method insert(data: T)
+    method insert(data: T, key: K)
       returns (success: bool)
       requires Valid()
       ensures Valid()
-      ensures success ==> data !in old(elements) && elements == {data} + old(elements)
-      ensures !success ==> data in old(elements) && elements == old(elements)
+      ensures success ==> key !in old(elements.Keys) && elements == map[key:=data] + old(elements)
+      ensures !success ==> key in old(elements.Keys) && elements == old(elements)
       ensures success ==> count == old(count) + 1
       ensures !success ==> count == old(count)
-      ensures data in elements
+      ensures key in elements.Keys
       modifies this`repr, ht, ht[..], this`count, this`elements
       ensures ht == old(ht)
-      ensures fresh(repr - old(repr))
-      //ensures success ==> old(Repr()) < Repr()
-      //ensures (success && old(Repr()) < Repr()) || (!success && old(Repr()) == Repr())
+      ensures fresh(Repr() - old(Repr()))
       ensures old(Repr()) <= Repr()
     {
-      var np := find(data);
+      var np := find(key);
       reveal Valid();
       if (np != null) {
-        assert data in elements;
+        assert key in elements.Keys;
         return false;
       }
-      not_found(data);
-      assert data !in elements;
+      not_found(key);
+      assert key !in elements.Keys;
 
       /*
       if (count==size) {
@@ -481,44 +500,48 @@ module HashTable {
       }*/
 
       /* Insert the new data */
-      var node := new hashtablenode<T>(data);
+      var node := new hashtablenode<K,T>(key, data);
       insert_aux(node);
       success := true;
     }
 
-    method insert_aux(node: hashtablenode<T>)
+    method insert_aux(node: hashtablenode<K,T>)
       requires Valid()
       //requires count < size
       requires node.Valid()
       requires node !in repr
-      requires node.data !in elements
+      requires node.key !in elements.Keys
       requires node.next == null
       ensures Valid()
       ensures node.data == old(node.data)
-      //ensures node.data in elements
-      ensures elements == old(elements) + {node.data}
+      ensures node.key == old(node.key)
+      ensures elements == old(elements) + map[node.key:=node.data]
       modifies this`repr, ht, ht[..], this`count, node, this`elements
       ensures ht == old(ht)
       ensures repr == old(repr) + {node}
       ensures count == old(count) + 1
     {
-      reveal Valid();
+      reveal keySet();
+      reveal keySetOfList();
       reveal valueSetOfList();
+      reveal Valid();
       /* Insert the new data */
-      var ph := hash(node.data);
+      var ph := hash(node.key);
       var h := ph % size;
 
-      ghost var oldValueSetOfList := valueSet(ht) - valueSetOfList(ht[h]);
+      ghost var oldKeySetOfList := keySet(ht) - keySetOfList(ht[h]);
       if (ht[h] == null) {
         ht[h] := node;
+        assert keySetOfList(ht[h]) == {node.key};
         assert valueSetOfList(ht[h]) == {node.data};
         // to help proving that elements == valueSet()
         assert forall k :: 0 <= k < ht.Length && k != h ==> ht[k] == old(ht[k]);
       } else {
-        ghost var t := valueSetOfList(ht[h]);
+        ghost var t := keySetOfList(ht[h]);
         assert node !in ht[h].nodes;
-        node.insert_before(node.data, ht[h]);
-        assert valueSetOfList(node) - {node.data} == t;
+        assert node.key !in t;
+        node.insert_before(node.key, node.data, ht[h]);
+        assert keySetOfList(node) - {node.key} == t;
         ht[h] := node;
         // to help proving that elements == valueSet()
         assert forall k :: 0 <= k < ht.Length && k != h ==> ht[k] == old(ht[k]);
@@ -526,11 +549,12 @@ module HashTable {
       assert listValid(ht[h]);
 
       repr := repr + {node};
-      elements := elements + {node.data};
+      elements := elements + map[node.key:=node.data];
       count := count + 1;
       //assert |elements|==count;
       //assert this in Repr;
-      assert node.data in elements;
+      assert node.key in elements.Keys;
+      assert node.data in elements.Values;
       assert repr == old(repr) + {node};
     }
 
@@ -541,60 +565,65 @@ module HashTable {
 
     }
 
-    lemma not_found(key: T)
+    lemma not_found(key: K)
       requires Valid()
       requires size > 0
       requires ht.Length == size
-      requires key !in elements
-      ensures key !in valueSetOfList(ht[hash(key) % size])
+      requires key !in elements.Keys
+      ensures key !in keySetOfList(ht[hash(key) % size])
     {
       reveal Valid();
+      reveal keySet();
+      reveal keySetOfList();
+      reveal valueSet();
       reveal valueSetOfList();
       lf(hash(key), size);
       assert 0 <= hash(key) % size < ht.Length;
-      assert key !in valueSetOfList(ht[hash(key) % size]);
+      assert key !in keySetOfList(ht[hash(key) % size]);
     }
 
     /* Return a pointer to data assigned to the given key.  Return NULL
     ** if no such key. */
-    method find(key: T)
-      returns (np: hashtablenode?<T>)
+    method find(key: K)
+      returns (np: hashtablenode?<K,T>)
       requires Valid()
-      ensures key in old(Model()) ==> np != null && np.Valid() && np.data == key
-      ensures key !in old(Model()) ==> np == null
+      ensures key in Model() <==> np != null && np.Valid() && np.key == key
+      ensures key !in Model() <==> np == null
     {
       reveal Valid();
+      reveal keySet();
+      reveal keySetOfList();
       reveal valueSetOfList();
       var h := hash(key) % size;
       np := ht[h];
-      ghost var seenValues : set<T> := {};
-      ghost var values := valueSetOfList(ht[h]);
-      assert key !in seenValues;
-      assert forall v :: v in values ==> v in elements;
+      ghost var seenKeys : set<K> := {};
+      ghost var keys := keySetOfList(ht[h]);
+      assert key !in seenKeys;
+      assert forall v :: v in keys ==> v in elements.Keys;
       while (np != null)
-        invariant seenValues + valueSetOfList(np) == values
+        invariant seenKeys + keySetOfList(np) == keys
         invariant np == null || (np != null && np.Valid())
         decreases if np == null then {} else np.nodes
-        invariant key !in seenValues
+        invariant key !in seenKeys
       {
-          if (np.data == key) {
+          if (np.key == key) {
             assert np != null;
-            assert np.data in elements;
+            assert np.key in elements.Keys;
             return;
           }
-          seenValues := seenValues + {np.data};
+          seenKeys := seenKeys + {np.key};
           np := np.next;
       }
       assert np == null;
-      assert seenValues == values;
-      assert key !in seenValues;
-      assert key !in elements;
+      assert seenKeys == keys;
+      assert key !in seenKeys;
+      assert key !in elements.Keys;
     }
   }
 }
 
-module HashTableTest {
-  import HashTable
+module HashMapTest {
+  import HashMap
 
   function strhash_loop(x: string, i: int, acc: nat): nat
     requires 0 <= i <= |x|
@@ -609,17 +638,17 @@ module HashTableTest {
   }
 
   method {:test} test() {
-      var s := new HashTable.hashtable<string>(i => strhash(i), 1024);
+      var s := new HashMap.hashtable<string,int>(i => strhash(i), 1024);
       reveal s.Valid();
-      assert s.elements == {} && s.repr == {};
-      var r := s.insert("x");
+      assert s.elements == map[] && s.repr == {};
+      var r := s.insert(0, "x");
       assert r == true;
       assert s.Valid();
-      r := s.insert("x");
+      r := s.insert(1, "x");
       assert r == false;
-      assert s.elements == {"x"};
-      r := s.insert("y");
+      assert s.elements == map["x":=0];
+      r := s.insert(1, "y");
       assert r == true;
-      assert s.elements == {"x","y"};
+      assert s.elements == map["x":=0,"y":=1];
   }
 }
